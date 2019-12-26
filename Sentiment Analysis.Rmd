@@ -1,0 +1,302 @@
+---
+title: "Whatsapp Analysis"
+author: "Freeman Goja"
+date: "20/12/2019"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r, include=FALSE}
+setwd("C:\\Users\\admin\\Desktop\\git hub\\Sentiments")
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First, let us install / Load relevant packages
+```{r, include=TRUE}
+if(!"pacman" %in% installed.packages()[,"Package"]) install.packages("pacman")
+pacman::p_load(rwhatsapp, plyr, dplyr, readr, ggplot2,stringr, syuzhet, RColorBrewer,
+               wordcloud, NLP, tm, SnowballC, RWeka, knitr, tidytext,
+               tidyr,RSentiment, DT, sqldf, tidyverse, gganimate, gifski, png, lubridate)
+theme_set(theme_bw())
+```
+
+Reading data
+```{r}
+chat<-rwa_read('C:\\Users\\admin\\Desktop\\git hub\\Sentiments\\_chat.txt')
+```
+
+```{r, include=FALSE}
+chat$author<-as.factor(chat$author)
+```
+
+```{r, include=FALSE}
+levels(chat$author)<-c("Terkaa", "Awase", "Akpen", "Sewuese", "Akura", "Akaa", "Mkav", "Iorfa", "Member", "Myina", "Oryina", "Bem", "Chia", "Denen", "Fanen", "Faave", "Gande", "Gbaior", "Hanmaior", "Ianna", "Jem", "Kator", "Luter", "Mwuese", "Mnena", "Nase", "Ordue", "Pama", "Ruam", "Shan", "Paimo", "Takema", "Usu", "Verem", "Yua", "Zua", "Zaave", "Zamber", "Vanen", "Mkaven")
+
+```
+
+Learning about our data
+```{r, include=TRUE}
+dim(chat)
+head(chat)
+glimpse(chat)
+```
+You will see that we have some missing values which we would like to drop
+```{r, include=TRUE}
+chat<-na.omit(chat)
+```
+We would like to exclude any deleted message from our analysis. First we have to ensure it's in character format
+```{r, include=TRUE}
+chat$text<-as.character(chat$text)
+chat<-chat[chat$text != 'This message was deleted',]
+```
+Now we can do some data engineering like extracting the chat hour, day, weekday and month
+```{r, include=TRUE}
+chat$Day <- format(as.Date(chat$time),"%d")
+chat$Month <- format(as.Date(chat$time),"%m")
+chat$Hour <- format(as.POSIXct(chat$time), "%H")
+chat$weekday<-weekdays(as.POSIXct(chat$time), abbreviate = T)
+```
+
+Let's visualize the chat distribution over the months
+```{r, include=TRUE}
+chat %>%
+  mutate(day = date(time)) %>%
+  count(day) %>%
+  ggplot(aes(x = day, y = n)) +
+  geom_bar(stat = "identity", fill="dark blue") +
+  ylab("") + xlab("") +
+  ggtitle("Chat Distribution over Months") +
+  theme_bw()
+```
+
+Visualizing everyone's chat contribution in the group
+```{r, include=TRUE}
+chat %>%
+  mutate(day = date(time)) %>%
+  count(author) %>%
+  ggplot(aes(x = reorder(author, n), y = n)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  ylab("") + xlab("") +
+  coord_flip() +
+  ggtitle("Number of messages") +
+  theme_bw()
+```
+
+Chat distribution over the hours of the day
+```{r, include=TRUE}
+chat%>%
+  ggplot(aes(x=Hour)) +
+  geom_histogram(stat = "count", fill="gold") +
+  labs(title = "Chats Per Hour", x= "Time") +
+  theme_classic()
+```
+
+Visualizing in animated form
+```{r, include=TRUE}
+chat$Hour<-as.integer(chat$Hour)   
+```
+```{r, include=TRUE}
+s_plot<-chat%>%
+  ggplot(aes(x=Hour)) +
+  geom_histogram(stat = "count", fill="gold") +
+  labs(title = "Chats Per Hour", x= "Time") +
+  theme_classic()
+s_plot + transition_time(chat$Hour) +
+  labs(title = "Hour: {frame_time}") +
+  shadow_wake(wake_length = 0.1, alpha = FALSE)
+```
+
+
+Chat distribution over days of the week.
+```{r, include=TRUE}
+chat %>%
+  mutate(day = date(time)) %>%
+  count(weekday) %>%
+  ggplot(aes(x = reorder(weekday, n), y = n)) +
+  geom_bar(stat = "identity", fill = "purple") +
+  ylab("") + xlab("") +
+  coord_flip() +
+  ggtitle("Number of messages") +
+  theme_bw()
+```
+
+Check out everyone's favourite emoji
+```{r, include=TRUE}
+chat %>%
+  unnest(emoji) %>%
+  count(author, emoji, sort = TRUE) %>%
+  group_by(author) %>%
+  top_n(n = 6, n) %>%
+  ggplot(aes(x = reorder(emoji, n), y = n, fill = author)) +
+  geom_col(show.legend = FALSE) +
+  ylab("") +
+  xlab("") +
+  coord_flip() +
+  facet_wrap(~author, ncol = 2, scales = "free_y")  +
+  ggtitle("Most often used emojis") +
+  theme_bw()
+```
+
+
+
+Care to know what is in the chats? Let's do some Sentiment Analysis. We will begin by extracting the relevant data (the chat content).
+Since image and video posts don't have text messages we would exclude them from our analysis, so, let's drop those values that read 'image omitted' and 'video omitted'.
+```{r, include=TRUE}
+new_chat<-chat[!endsWith(chat$text, "omitted"),]
+my_text<-new_chat$text
+```
+
+Data Preprocessing, creating a document term matrix, stemmatization etc
+```{r, warning=FALSE}
+set.seed(100)
+sample <- sample(my_text, (length(my_text)))
+corpus <- Corpus(VectorSource(list(sample)))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, removeWords, stopwords('english'))
+corpus <- tm_map(corpus, stemDocument)
+dt_matrix <- DocumentTermMatrix(VCorpus(VectorSource(corpus[[1]]$content)))
+final_words <- colSums(as.matrix(dt_matrix))
+```
+Now we can use the inbuilt function to Calculate Sentiments
+```{r, include=FALSE}
+our_sentiments <- calculate_sentiment(names(final_words))
+```
+
+Showing distribution of the sentiments
+```{r, include=TRUE}
+count<-table(our_sentiments$sentiment)
+barplot(count, main="Sentiment distribution",
+        xlab="Number of sentiments", col = c("red", "blue", "green"))
+```
+
+Now let's seperate the sentiments into positive, negative and neutral
+```{r, include=TRUE}
+pos_sent<-our_sentiments[our_sentiments$sentiment == 'Positive',]
+neg_sent<-our_sentiments[our_sentiments$sentiment == 'Negative',]
+neut_sent<-our_sentiments[our_sentiments$sentiment == 'Neutral',]
+```
+
+Looking at the sentiments one after the other. First, the Positive sentiments. You can click through the interactive table to see all the sentimental words.
+```{r, include=TRUE}
+DT::datatable(pos_sent)
+```
+
+Now let's bring all the positive words into one bag. We will limit ourselves to words with freq of at least 10 just for clarity sake.
+```{r, warning=FALSE}
+layout(matrix(c(1, 2), nrow=2), heights=c(1, 4))
+par(mar=rep(0, 4))
+plot.new()
+set.seed(100)
+wordcloud(pos_sent$text,final_words,min.final_words=10,colors=brewer.pal(6,"Dark2"))
+```
+
+Negative Sentiments
+```{r, include=TRUE}
+DT::datatable(neg_sent)
+```
+Wordcloud of negative sentiments
+```{r, warning=FALSE}
+layout(matrix(c(1, 2), nrow=2), heights=c(1, 4))
+par(mar=rep(0, 4))
+plot.new()
+set.seed(100)
+wordcloud(neg_sent$text,final_words, min.final_words=10,colors=brewer.pal(6,"Dark2"))
+```
+
+
+Let us compare the Proportions of positive, negative and neutral sentiments
+Total sentiments
+```{r, include=TRUE}
+total_sent<-length(our_sentiments$sentiment)
+```
+Positive Sentiments
+```{r, include=TRUE}
+pos_count<-sqldf("select count(sentiment) from our_sentiments where sentiment='Positive'")
+print(pos_count)
+pos_prop<-pos_count/total_sent * 100
+print(paste("The proportion of positive sentiments is ", round(pos_prop, digits = 1), "%"))
+```
+Negative Sentiments
+```{r, include=TRUE}
+neg_count<-sqldf("select count(sentiment) from our_sentiments where sentiment='Negative'")
+print(neg_count)
+neg_prop<-neg_count/total_sent * 100
+print(paste("The proportion of Negative sentiments is ", round(neg_prop, digits = 1), "%"))
+```
+
+Neutral Sentiments
+```{r, include=TRUE}
+neut_count<-sqldf("select count(sentiment) from our_sentiments where sentiment='Neutral'")
+print(neut_count)
+neut_prop<-neut_count/total_sent * 100
+print(paste("The proportion of Neutral sentiments is ", round(neut_prop, digits = 1), "%"))
+```
+Let us do Hypothesis testing using Fisher Exact probability test to see if there's any statistical difference between the overall positive and negative sentiments.
+```{r, include=TRUE}
+res <- prop.test(x = c(309, 267), n = c(4929, 4929))
+res
+```
+Since our p_value of 0.078 is greater than 0.05, we fail to reject the null hypothesis and conclude that there's no statistical difference between our negative and positive sentiments. 
+
+Another way to analyze sentiments is to use the Syuzhet's algorithm to extract and plot the emotional trajectory.
+Here, each chat is taken as a sentence and assigned a positive or negative score based on the total score of all the words in it. This is called Emotional Valence.We will be using the NRC option which is based on simple lexicons.
+As usual, we will start with some cleaning to remove html links, punctuations and non-alphanumeric characters like emojis.
+
+```{r, include=TRUE}
+new_text<-gsub("http[^[:blank:]]+","",my_text)
+new_text<-gsub("@\\w+","",new_text)
+new_text<-gsub("[[:punct:]]"," ",new_text)
+new_text<-gsub("[^[:alnum:]]"," ",new_text)
+```
+Now we can use the NRC function to extract the sentences and calculate valence
+
+```{r, include=TRUE}
+new_sentiment<-get_nrc_sentiment((new_text))
+```
+Calculating the valence
+
+```{r, include=TRUE}
+new_sentiment.positive =sum(new_sentiment$positive)
+new_sentiment.anger =sum(new_sentiment$anger)
+new_sentiment.anticipation =sum(new_sentiment$anticipation)
+new_sentiment.disgust =sum(new_sentiment$disgust)
+new_sentiment.fear =sum(new_sentiment$fear)
+new_sentiment.joy =sum(new_sentiment$joy)
+new_sentiment.sadness =sum(new_sentiment$sadness)
+new_sentiment.surprise =sum(new_sentiment$surprise)
+new_sentiment.trust =sum(new_sentiment$trust)
+new_sentiment.negative =sum(new_sentiment$negative)
+```
+
+Let's create a bar chart to visualize the emotional scores
+
+```{r, include=TRUE}
+yAxis <- c(new_sentiment.positive,
+           + new_sentiment.anger,
+           + new_sentiment.anticipation,
+           + new_sentiment.disgust,
+           + new_sentiment.fear,
+           + new_sentiment.joy,
+           + new_sentiment.sadness,
+           + new_sentiment.surprise,
+           + new_sentiment.trust,
+           + new_sentiment.negative)
+xAxis <- c("Positive","Anger","Anticipation","Disgust","Fear","Joy","Sadness","Surprise","Trust","Negative")
+colors <- c("green","red","blue","orange","red","green","orange","blue","green","red")
+yRange <- range(0,yAxis) + 500
+barplot(yAxis, names.arg = xAxis,
+        xlab = "Emotional valence", ylab = "Score", main = "Data Science Class Emotional Valence", sub = "Dec 2019", col = colors, border = "black", ylim = yRange, xpd = F, axisnames = T, cex.axis = 0.8, cex.sub = 0.8, col.sub = "blue")
+colSums(new_sentiment)
+```
+
+So, here we are at the end of this analysis. Like every Data Science project, the end goal was to find insights. We started with nothing in mind, but in the end two things stand out for me:
+1. The best day of the week to start a discussion and get the most contributions is Thursday. Did I hear you say expect slow response on Saturdays? There you have it. 
+2. If you are the type that rarely get on your phone, at least check the group chat at 9AM and 9PM everyday for trending topics.
